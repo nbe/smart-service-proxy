@@ -29,10 +29,12 @@ import com.hp.hpl.jena.rdf.model.ModelFactory;
 import com.hp.hpl.jena.vocabulary.VCARD;
 import eu.spitfire_project.smart_service_proxy.core.Backend;
 import eu.spitfire_project.smart_service_proxy.core.httpServer.EntityManager;
+import eu.spitfire_project.smart_service_proxy.core.httpServer.HtmlCreator;
 import eu.spitfire_project.smart_service_proxy.core.SelfDescription;
 import eu.spitfire_project.smart_service_proxy.utils.HttpResponseFactory;
 import org.apache.commons.configuration.ConfigurationException;
 import org.apache.log4j.Logger;
+import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.channel.*;
 import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
 import org.jboss.netty.handler.codec.http.HttpMethod;
@@ -41,6 +43,7 @@ import org.jboss.netty.handler.codec.http.HttpResponseStatus;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.Charset;
 import java.util.HashMap;
 
 /**
@@ -81,11 +84,18 @@ public class SimpleBackend extends Backend {
             Model model = ModelFactory.createDefaultModel();
             model.createResource(personURI).addProperty(VCARD.FN, "John Smith");
 
+            // TODO mein Test
+            model.getResource(personURI).addProperty(VCARD.N,
+                    model.createResource()
+                         .addProperty(VCARD.Given, "John")
+                         .addProperty(VCARD.Family, "Smith"));
+            // Ende TODO
+            
             resources.put(prefix + "JohnSmith", model);
 
             URI resourceTargetUri = new URI("http://"
                                     + EntityManager.SSP_DNS_NAME
-                                    + ":" + EntityManager.SSP_HTTP_SERVER_PORT
+//                                    + ":" + EntityManager.SSP_HTTP_SERVER_PORT
                                     + prefix + "JohnSmith");
 
 
@@ -112,8 +122,15 @@ public class SimpleBackend extends Backend {
 
         //Look up resource
         String path = request.getUri();
+        String host = request.getHeader("host");
         log.debug("Received request for path:" + path);
 
+        boolean showHtml = false;
+        if (path.endsWith("?html")){
+        	showHtml = true;
+        	path = path.replace("?html", "");
+        }
+        
         for(String service : resources.keySet()){
             log.debug("Available Service: " + service);
         }
@@ -122,9 +139,16 @@ public class SimpleBackend extends Backend {
             
         if(model != null){
             if(request.getMethod() == HttpMethod.GET){
-                response = new SelfDescription(model, new URI(request.getUri()));
-                
-                log.debug("Resource found: " + path);
+                if (showHtml){
+                	String html = HtmlCreator.createModelPage(model, new URI(path), host);                	
+                    response = ChannelBuffers.wrappedBuffer(html.getBytes(Charset.forName("UTF-8")));
+                    
+                    log.debug("Returned html page for resource: " + path);
+                } else {
+                	response = new SelfDescription(model, new URI(request.getUri()));
+                    
+                    log.debug("Resource found: " + path);
+                }
             }
             else{
                 response = new DefaultHttpResponse(request.getProtocolVersion(),
@@ -139,7 +163,7 @@ public class SimpleBackend extends Backend {
             
             log.debug("Resource not found: " + path);
         }
-       
+        
         //Send response
         ChannelFuture future = Channels.write(ctx.getChannel(), response);
         future.addListener(ChannelFutureListener.CLOSE);

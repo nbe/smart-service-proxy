@@ -29,9 +29,11 @@ import com.hp.hpl.jena.rdf.model.Model;
 import com.hp.hpl.jena.rdf.model.ModelFactory;
 import eu.spitfire_project.smart_service_proxy.core.Backend;
 import eu.spitfire_project.smart_service_proxy.core.httpServer.EntityManager;
+import eu.spitfire_project.smart_service_proxy.core.httpServer.HtmlCreator;
 import eu.spitfire_project.smart_service_proxy.core.SelfDescription;
 import eu.spitfire_project.smart_service_proxy.utils.HttpResponseFactory;
 import org.apache.log4j.Logger;
+import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.channel.*;
 import org.jboss.netty.handler.codec.http.HttpMethod;
 import org.jboss.netty.handler.codec.http.HttpRequest;
@@ -41,6 +43,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.Charset;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Set;
@@ -94,10 +97,12 @@ public class FilesBackend extends Backend {
             for(File file : files){
                 if(!file.getName().endsWith(".swp")){
                     try{
-                        URI resourceURI = new URI(EntityManager.SSP_DNS_NAME + prefix + file.getName());
+                        URI resourceURI = new URI("http://" + EntityManager.SSP_DNS_NAME + prefix + file.getName());
                           
                         resources.put(resourceURI, file);
 
+                        EntityManager.getInstance().entityCreated(resourceURI, this);
+                        
                         if(log.isDebugEnabled()){
                             log.debug("[FilesBackend] Added file " + file.getAbsolutePath() +
                                     " as new resource at " + resourceURI);
@@ -122,9 +127,18 @@ public class FilesBackend extends Backend {
 
 		HttpRequest request = (HttpRequest) me.getMessage();
         Object response;
-                   
+        
+        String path = request.getUri();
+        String host = request.getHeader("host");
+        boolean showHtml = false;
+        if (path.endsWith("?html")){
+        	showHtml = true;
+        	path = path.replace("?html", "");
+        }
+        
         //Look up file
-        URI resourceURI = EntityManager.getInstance().normalizeURI(new URI(request.getUri()));
+        URI resourceURI = EntityManager.getInstance().normalizeURI(new URI("http://" + EntityManager.SSP_DNS_NAME + path));
+        
         File file = resources.get(resourceURI);
 
         if(file != null && file.isFile()){
@@ -137,7 +151,13 @@ public class FilesBackend extends Backend {
 
                 try{
                     model.read(inputStream, resourceURI.toString(), "N3");
-                    response = new SelfDescription(model, resourceURI, new Date());
+                    
+                    if (showHtml){
+                    	String html = HtmlCreator.createModelPage(model, new URI(path), host);                	
+                        response = ChannelBuffers.wrappedBuffer(html.getBytes(Charset.forName("UTF-8")));
+                    } else {
+                        response = new SelfDescription(model, resourceURI, new Date());
+                    }
                 }
                 catch(TurtleParseException e){
                     response = HttpResponseFactory.createHttpResponse(request.getProtocolVersion(),

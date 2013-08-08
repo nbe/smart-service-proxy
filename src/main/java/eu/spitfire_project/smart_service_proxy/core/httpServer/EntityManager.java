@@ -24,28 +24,39 @@
  */
 package eu.spitfire_project.smart_service_proxy.core.httpServer;
 
-import eu.spitfire_project.smart_service_proxy.core.Backend;
-import eu.spitfire_project.smart_service_proxy.core.UIElement;
+import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileReader;
+import java.io.RandomAccessFile;
+import java.net.InetAddress;
+import java.net.URI;
+import java.nio.charset.Charset;
+import java.util.NoSuchElementException;
+import java.util.Vector;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.configuration.ConfigurationException;
 import org.apache.commons.configuration.PropertiesConfiguration;
 import org.apache.log4j.Logger;
 import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.buffer.ChannelBuffers;
-import org.jboss.netty.channel.*;
+import org.jboss.netty.channel.ChannelFuture;
+import org.jboss.netty.channel.ChannelFutureListener;
+import org.jboss.netty.channel.ChannelHandlerContext;
+import org.jboss.netty.channel.Channels;
+import org.jboss.netty.channel.MessageEvent;
+import org.jboss.netty.channel.SimpleChannelHandler;
 import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
 import org.jboss.netty.handler.codec.http.HttpRequest;
 import org.jboss.netty.handler.codec.http.HttpResponse;
 import org.jboss.netty.handler.codec.http.HttpResponseStatus;
-import sun.net.util.IPAddressUtil;
 
-import java.net.InetAddress;
-import java.net.URI;
-import java.nio.charset.Charset;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Vector;
-import java.util.concurrent.ConcurrentHashMap;
+import sun.net.util.IPAddressUtil;
+import eu.spitfire_project.smart_service_proxy.core.Backend;
+import eu.spitfire_project.smart_service_proxy.core.UIElement;
 
 //import eu.spitfire_project.smart_service_proxy.backends.coap.CoapBackend;
 
@@ -200,7 +211,7 @@ public class EntityManager extends SimpleChannelHandler {
 			super.messageReceived(ctx, e);
             return;
 		}
-
+        
         HttpRequest httpRequest = (HttpRequest) e.getMessage();
         URI targetUri = toThing(URI.create("http://" + httpRequest.getHeader("HOST") + httpRequest.getUri()));
 
@@ -228,9 +239,14 @@ public class EntityManager extends SimpleChannelHandler {
             targetUri = toThing(URI.create("http://" + targetUriHost + httpRequest.getUri()));
             log.debug("Shortened target URI: " + targetUri);
         }
-
-        if(entities.containsKey(targetUri)){
-            Backend backend = entities.get(targetUri);
+        
+        URI uriToCheck = targetUri;
+        if ((uriToCheck.getQuery() != null) && (uriToCheck.getQuery().equals("html"))){
+        	uriToCheck = toThing(URI.create("http://" + targetUri.getHost() + targetUri.getPath()));
+        }
+       
+        if(entities.containsKey(uriToCheck)){
+            Backend backend = entities.get(uriToCheck);
 			try {
                 ctx.getPipeline().remove("Backend to handle request");
 			}
@@ -240,9 +256,8 @@ public class EntityManager extends SimpleChannelHandler {
             ctx.getPipeline().addLast("Backend to handle request", backend);
             log.debug("Forward request to " + backend);
         }
-
-        else if(virtualEntities.containsKey(targetUri)){
-            Backend backend = virtualEntities.get(targetUri);
+        else if(virtualEntities.containsKey(uriToCheck)){
+            Backend backend = virtualEntities.get(uriToCheck);
 			try {
                 ctx.getPipeline().remove("Backend to handle request");
 			}
@@ -288,32 +303,42 @@ public class EntityManager extends SimpleChannelHandler {
             future.addListener(ChannelFutureListener.CLOSE);
             return;
         }
-
+		else if (httpRequest.getUri().endsWith("spitfire-logo.png") || (httpRequest.getUri().endsWith("favicon.ico"))){
+			File img;
+			if (httpRequest.getUri().endsWith("spitfire-logo.png")){
+				img = new File("spitfire-logo.png"); 
+			} else {
+				img = new File("favicon.ico");
+			}
+			
+			int imgLength = (int) img.length();
+			
+			FileInputStream in = new FileInputStream(img);
+			byte[] imgMemory = new byte[imgLength];
+			in.read(imgMemory);
+			in.close();
+			
+			HttpResponse httpResponse = new DefaultHttpResponse(httpRequest.getProtocolVersion(), HttpResponseStatus.OK);
+			httpResponse.setContent(ChannelBuffers.wrappedBuffer(imgMemory));
+			ChannelFuture future = Channels.write(ctx.getChannel(), httpResponse);
+            future.addListener(ChannelFutureListener.CLOSE);
+            
+            if (httpRequest.getUri().endsWith("spitfire-logo.png")){
+    			log.debug("Served request for Spitfire image.");
+            } else {
+    			log.debug("Served favicon.");
+            }
+            
+            return;
+		}
+        
         ctx.sendUpstream(e);
     }
 
     private ChannelBuffer getHtmlListOfServices(){
-        StringBuilder buf = new StringBuilder();
-        buf.append("<html><body>\n");
-        buf.append("<h1>Smart Service Proxy</h1>\n");
-        buf.append("<h2>Operations</h2>\n");
-        buf.append("<ul>\n");
-        for(UIElement elem: uiElements) {
-            buf.append(String.format("<li><a href=\"%s\">%s</a></li>\n", elem.getURI(), elem.getTitle()));
-        }
-        buf.append("</ul>\n");
-
-        buf.append("<h2>Entities</h2>\n");
-        buf.append("<ul>\n");
-        for(Map.Entry<URI, Backend> entry: entities.entrySet()) {
-            buf.append(String.format("<li><a href=\"%s\">%s</a></li>\n", entry.getKey(), entry.getKey()));
-        }
-        buf.append("</ul>\n");
-
-        buf.append("</body></html>\n");
-
-        return ChannelBuffers.wrappedBuffer(buf.toString()
-                                               .getBytes(Charset.forName("UTF-8")));
+    	String html = HtmlCreator.createMainPage(uiElements, entities);
+    	
+        return ChannelBuffers.wrappedBuffer(html.getBytes(Charset.forName("UTF-8")));
     }
 
 	/**
