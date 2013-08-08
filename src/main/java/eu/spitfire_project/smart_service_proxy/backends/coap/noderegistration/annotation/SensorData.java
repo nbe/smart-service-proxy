@@ -18,7 +18,9 @@ public class SensorData {
     public String macAddr = null;
     public String FOI = null;
     public String httpRequestUri = null;
+    public boolean newlyAdded = true;
     private static int ID = 0; //Sensor ID
+    public double liveSc = 0;
 
     private int MAX_NUMBER_OF_VALUES = 96;
     private LinkedHashMap<Long, Double> readings = new LinkedHashMap<Long, Double>(MAX_NUMBER_OF_VALUES + 1, .75F, false){
@@ -43,6 +45,7 @@ public class SensorData {
         this.macAddr = macAddr;
         this.httpRequestUri = httpRequestUri;
         this.FOI = FOI;
+        newlyAdded = true;
 
         if ("Unannotated".equalsIgnoreCase(FOI))
             annoTimer = System.currentTimeMillis();
@@ -52,12 +55,6 @@ public class SensorData {
         log.debug("Before: " + readings.keySet().size());
         readings.put(timeStamp, value);
         log.debug("After: " + readings.keySet().size());
-//        timeStamps.add(timeStamp);
-//        if (timeStamps.size() >= numberOfImagesPerDay)
-//            timeStamps.remove(0);
-//        values.add(value);
-//        if (values.size() >= numberOfImagesPerDay)
-//            values.remove(0);
     }
 
     public List<Double> getValues() {
@@ -65,17 +62,13 @@ public class SensorData {
     }
 
     public long getLatestTS() {
-        log.debug("Number of readings: " + readings.keySet().size());
+        //log.debug("Number of readings: " + readings.keySet().size());
         if(!readings.isEmpty()){
             return Iterables.getLast(readings.keySet());
         }
         else{
             return 0;
         }
-//        long rs = 0;
-//        if (timeStamps.size() > 0)
-//            rs = timeStamps.get(timeStamps.size()-1);
-//        return rs;
     }
 
     public double getLatestVL() {
@@ -85,19 +78,12 @@ public class SensorData {
         else{
             return 0;
         }
-//        double rs = 0;
-//        if (values.size() > 0)
-//            rs = values.get(values.size()-1);
-//        return rs;
     }
 
     public void computeFuzzySet(int nDataPoint) {
-        log.debug("Start computing FZ");
+        //log.debug("Start computing FZ");
         ArrayList<Double> readingValues = new ArrayList<Double>(readings.values());
         fz = extractRule(readingValues, nDataPoint);
-        dfz = extractRuleD(readingValues, nDataPoint);
-//        fz = extractRule(values, nDataPoint);
-//        dfz = extractRuleD(values, nDataPoint);
     }
 
     public FuzzyRule getFZ() {
@@ -108,52 +94,48 @@ public class SensorData {
         return dfz;
     }
 
-    private FuzzyRule extractRuleD(List<Double> datList, int nDataPoint) {
-        List<Double> dataList = new ArrayList<Double>();
-        for (int i=0; i<nDataPoint; i++)
-            dataList.add(datList.get(i));
+    private FuzzyRule extractRule(ArrayList<Double> datList, int nDataPoint) {
+        //Extract the latest nDataPoint for fuzzyset computation
+        ArrayList<Double> dataList = new ArrayList<Double>();
+        int np = nDataPoint;
+        if (np > datList.size())
+            np = datList.size();
+        for (int i=0; i<np; i++)
+            dataList.add(datList.get(datList.size()-np+i));
 
-        FuzzyRule ruleD = null;
-
-        if (dataList.size() > 2) {
-            ArrayList<Double> deriList = new ArrayList<Double>();
-            Double[] raw = dataList.toArray(new Double[dataList.size()]);
-            for (int i=0; i<raw.length-1; i++) {
-                Double tmp = raw[i + 1] - raw[i];
-                deriList.add(tmp);
-            }
-            deriList.add(deriList.get(deriList.size()-1));
-            ruleD = extractRule(deriList, nDataPoint);
-        }
-
-        return ruleD;
-    }
-
-    private FuzzyRule extractRule(List<Double> datList, int nDataPoint) {
-        log.debug("Start extractRule");
-        List<Double> dataList = new ArrayList<Double>();
-        for (int i=0; i<nDataPoint; i++)
-            dataList.add(datList.get(i));
-
+        //log.debug("Start extractRule");
         Double[] raw = dataList.toArray(new Double[dataList.size()]);
+
+        /*
+        double rawMax = Double.MIN_VALUE;
+        for (int i=0; i<raw.length; i++)
+            if (rawMax < raw[i]) rawMax = raw[i];
+        double rawMin = Double.MAX_VALUE;
+        for (int i=0; i<raw.length; i++)
+            if (rawMin > raw[i]) rawMin = raw[i];
+        */
+
 
         // Identify the value range
         double rawMax = Collections.max(dataList);
         double rawMin = Collections.min(dataList);
         double rawRange = rawMax - rawMin;
 
+        // Special case: all values are the same
+        if (rawRange <= Double.MIN_VALUE) {
+            System.out.println("All values in snapshot are identical");
+            double epsilon = 0.05;
+            FuzzyRule rule = new FuzzyRule();
+            rule.setrMax(rawMax + epsilon);
+            rule.setrMin(rawMin - epsilon);
+            rule.add(raw[0] - epsilon, 1);
+            rule.add(raw[0] + epsilon, 1);
+            return rule;
+        }
+
         FuzzyRule rule = null;
 
-        // Special case: all values are the same
-        /*if (rawRange <= Double.MIN_VALUE) {
-          log.debug("All values in snapshot are identical");
-          double epsilon = 0.05;
-          rule.setrMax(rawMax + epsilon);
-          rule.setrMin(rawMin - epsilon);
-          rule.add(raw[0] - epsilon, 1);
-          rule.add(raw[0] + epsilon, 1);
-      } else {*/
-        if (rawRange > Double.MIN_VALUE) {
+        //if (rawRange > 0) {
             rule = new FuzzyRule();
             double ra = 0.5*rawRange;
             double alpha = 4/ra/ra;
@@ -209,7 +191,7 @@ public class SensorData {
                     dndcY[i] /= dndcC[i];
                 }
             }
-            log.debug("Returning a rule 0");
+            //log.debug("Returning a rule 0");
             /*------ Linearize the discrete neighborhood density curve ------ */
             TList vx = new TList();
             TList vy = new TList();
@@ -246,9 +228,10 @@ public class SensorData {
                 }
                 rule.add((Double)vx.get(vx.len()-1), (Double)vy.get(vy.len()-1));
             }
-        }
+        //}
 
-        log.debug("Returning a rule");
+        //log.debug("Returning a rule");
+
         return rule;
     }
 
@@ -260,7 +243,7 @@ public class SensorData {
 
             long currentTime = System.currentTimeMillis();
             //updateReadings(currentTime, random.nextInt(1000));
-            log.debug("Crawl for " + macAddr + " at time " + currentTime + "...");
+            //log.debug("Crawl for " + macAddr + " at time " + currentTime + "...");
             URL crawlRequest = new URL(httpRequestUri);
             URLConnection connection = crawlRequest.openConnection();
 
@@ -277,7 +260,7 @@ public class SensorData {
 
             double value = 0;
             while ((line = in.readLine()) != null) {
-                log.debug("content: " + line + ", ");
+                //log.debug("content: " + line + ", ");
                 if (line.indexOf("value")>0) {
                     //log.debug("The value line is: "+line);
                     TString s1 = new TString(line, '>');
@@ -296,7 +279,7 @@ public class SensorData {
             spitfireHandler.run();
             //updateReadings(currentTime, random.nextInt(1000));
 
-            log.debug(" Done for " + macAddr + " with value:" + String.format("%.2f", value));
+            log.debug("\nDone crawling for "+ macAddr + " with value:" + String.format("%.2f", value));
         } catch (MalformedURLException e) {
             log.debug("failed to crawl for "+macAddr, e);
         } catch (IOException e) {

@@ -14,6 +14,8 @@ import org.openrdf.repository.RepositoryConnection;
 import org.openrdf.repository.RepositoryException;
 import org.openrdf.repository.http.HTTPRepository;
 
+import eu.spitfire_project.smart_service_proxy.triplestore.SesameConnector;
+
 import javax.xml.datatype.DatatypeFactory;
 import javax.xml.datatype.XMLGregorianCalendar;
 
@@ -37,8 +39,7 @@ public class SimulatedTimeUpdater
     {
         try
         {
-            repo = new HTTPRepository(SimulatedTimeParameters.repoAdr,
-                    SimulatedTimeParameters.repositoryID);
+            repo = new HTTPRepository(SesameConnector.SESAME_URL, SimulatedTimeParameters.repositoryID);
             repo.initialize();
             repo.getConnection().setAutoCommit(false);
             vf = repo.getValueFactory();
@@ -87,6 +88,16 @@ public class SimulatedTimeUpdater
         }*/
         DateTime simulatedTime = SimulatedTimeParameters.startDate.plusMinutes((int)minSinceStart);
         time = SimulatedTimeParameters.dateFormatter.format(simulatedTime.toDate());
+
+        DateTime simulatedTime2 = SimulatedTimeParameters.startDate.plusMinutes(6120);
+        String time2 = SimulatedTimeParameters.dateFormatter.format(simulatedTime2.toDate());
+
+
+        System.out.println("==========================================");
+        System.out.println(time2);
+        System.out.println("simulatedTime: " + simulatedTime.toString());
+        System.out.println("==========================================");
+
         try
         {
             conn = repo.getConnection();

@@ -33,11 +33,11 @@ import de.uniluebeck.itm.spitfire.nCoap.message.CoapResponse;
 import de.uniluebeck.itm.spitfire.nCoap.message.options.Option;
 import de.uniluebeck.itm.spitfire.nCoap.message.options.OptionRegistry;
 import de.uniluebeck.itm.spitfire.nCoap.message.options.UintOption;
-import eu.spitfire_project.smart_service_proxy.Main;
-import eu.spitfire_project.smart_service_proxy.core.Backend;
-import eu.spitfire_project.smart_service_proxy.core.httpServer.EntityManager;
-import eu.spitfire_project.smart_service_proxy.core.SelfDescription;
+import eu.spitfire_project.smart_service_proxy.backends.coap.noderegistration.CoapResourceDiscoverer;
 import eu.spitfire_project.smart_service_proxy.backends.coap.noderegistration.annotation.AutoAnnotation;
+import eu.spitfire_project.smart_service_proxy.core.Backend;
+import eu.spitfire_project.smart_service_proxy.core.SelfDescription;
+import eu.spitfire_project.smart_service_proxy.core.httpServer.EntityManager;
 import eu.spitfire_project.smart_service_proxy.utils.HttpResponseFactory;
 import eu.spitfire_project.smart_service_proxy.utils.TString;
 import org.apache.log4j.Logger;
@@ -54,14 +54,15 @@ import sun.net.util.IPAddressUtil;
 import java.net.*;
 import java.nio.charset.Charset;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import static de.uniluebeck.itm.spitfire.nCoap.message.options.OptionRegistry.OptionName.*;
-import static de.uniluebeck.itm.spitfire.nCoap.message.options.OptionRegistry.MediaType.*;
 import static de.uniluebeck.itm.spitfire.nCoap.message.options.OptionRegistry.MediaType;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import static de.uniluebeck.itm.spitfire.nCoap.message.options.OptionRegistry.MediaType.APP_LINK_FORMAT;
+import static de.uniluebeck.itm.spitfire.nCoap.message.options.OptionRegistry.OptionName.CONTENT_TYPE;
 
 
 /**
@@ -75,12 +76,13 @@ public class CoapBackend extends Backend{
     public static final int NODES_COAP_PORT = 5683;
     private static Logger log = Logger.getLogger(CoapBackend.class.getName());
         
-    private HashMultimap<Inet6Address, String> services = HashMultimap.create();
+    private HashMultimap<Inet6Address, String> registeredServices = HashMultimap.create();
     private boolean enableVirtualHttp;
     private DatagramChannel clientChannel = CoapClientDatagramChannelFactory.getInstance().getChannel();
 
     private HashBasedTable<Inet6Address, String, CoapResourceObserver> coapResourceObservers
             = HashBasedTable.create();
+
 
     /**
      * Create a new instance of the CoAPBackend-Application with a listening Datagram Socket on port 5683.
@@ -89,12 +91,73 @@ public class CoapBackend extends Backend{
         super();
         this.enableVirtualHttp = enableVirtualHttp;
         this.prefix = prefix;
+
+        new Thread(new Runnable(){
+            @Override
+            public void run() {
+                while(true){
+                    //This is a helper parameter for catching the exception
+                    Inet6Address actualNodeAddress = null;
+
+                    try {
+                        Thread.sleep(10000);
+                        log.info("Check if registered nodes are alive...");
+
+                        for(Inet6Address nodeAddress : registeredServices.keySet()){
+                            actualNodeAddress = nodeAddress;
+                            CoapResourceDiscoverer discoverer = new CoapResourceDiscoverer(nodeAddress, false);
+
+                            //wait up to 2 minutes for a new list of registeredServices from host
+                            discoverer.getFuture().get(30, TimeUnit.SECONDS);
+
+                            //this is only reached if the node sent a response within 2 minutes
+                            log.debug("Node is still alive.");
+                        }
+                    } catch (InterruptedException e) {
+                        log.error(e);
+                    } catch (ExecutionException e) {
+                        log.error(e);
+                    } catch (TimeoutException e) {
+                        log.info("Node " + actualNodeAddress + " did not respond! Host is dead!");
+                        unregisterServices(actualNodeAddress);
+                    }
+                }
+            }
+        }).start();
+    }
+
+    private synchronized void unregisterServices(Inet6Address nodeAddress){
+        try{
+            for(Inet6Address address : registeredServices.keySet()){
+                log.debug("Address: " + address);
+            }
+            Set<String> removedPaths = registeredServices.removeAll(nodeAddress);
+            log.info("" + removedPaths.size() + " registeredServices removed for " + nodeAddress);
+
+            for(String path : removedPaths){
+                URI[] httpURIs = createHttpURIs(nodeAddress, path);
+                EntityManager.getInstance().entityDeleted(httpURIs[0], this);
+                EntityManager.getInstance().virtualEntityDeleted(httpURIs[1], this);
+            }
+
+
+            Map observers = coapResourceObservers.row(nodeAddress);
+            observers.clear();
+            log.info("Removed all observers for " + nodeAddress);
+
+        } catch (URISyntaxException e) {
+            log.error(e);
+        }
     }
 
     @Override
     public void bind(){
         EntityManager.getInstance().registerBackend(this, prefix);
     }
+
+//    public void updateLatestVitalSign(Inet6Address remoteAddress){
+//        latestVitalSigns.put(remoteAddress, System.currentTimeMillis());
+//    }
 
     @Override
     public void writeRequested(final ChannelHandlerContext ctx, final MessageEvent me) throws Exception{
@@ -103,10 +166,10 @@ public class CoapBackend extends Backend{
             log.info("Stop observing of " + message.getServiceHost().getHostAddress() + message.getServicePath());
 
             if(coapResourceObservers.remove(message.getServiceHost(), message.getServicePath()) != null){
-                log.info("Succesfully removed from list of observed services.");
+                log.info("Succesfully removed from list of observed registeredServices.");
             }
             else{
-                log.error("Could not find service in list of observed services!");
+                log.error("Could not find service in list of observed registeredServices!");
             }
 
             return;
@@ -137,7 +200,7 @@ public class CoapBackend extends Backend{
                     (Inet6Address) InetAddress.getByName(httpRequest.getHeader("HOST"));
             final String targetUriPath = httpRequest.getUri();
 
-            if(services.containsEntry(targetUriHostAddress, targetUriPath)){
+            if(registeredServices.containsEntry(targetUriHostAddress, targetUriPath)){
                 //create CoAP target URI
                 final URI coapTargetURI = URI.create("coap://["
                                               + targetUriHostAddress.getHostAddress()
@@ -152,6 +215,9 @@ public class CoapBackend extends Backend{
 
                         Object response;
                         log.debug("Received CoAP response from " + me.getRemoteAddress());
+
+                        //Update latest vital sign
+//                        updateLatestVitalSign((Inet6Address) ((InetSocketAddress) me.getRemoteAddress()).getAddress());
 
                         try{
                             if(!(coapResponse.getCode().isErrorMessage()) && coapResponse.getPayload().readableBytes() > 0){
@@ -229,24 +295,25 @@ public class CoapBackend extends Backend{
      * @return the {@link InetAddress}es of the already known sensornodes
      */
     public Set<Inet6Address> getSensorNodes(){
-        return services.keySet();
+        return registeredServices.keySet();
     }
 
     /**
-     * Unregisters all services known for the given address (CoAP host, resp. sensornode)
-     * @param serverAddress The IPv6 address of the server to unregister all services of
+     * Unregisters all registeredServices known for the given address (CoAP host, resp. sensornode)
+     * @param serverAddress The IPv6 address of the server to unregister all registeredServices of
      */
     public void deleteServices(Inet6Address serverAddress){
-        log.debug("Delete services for " + serverAddress + ".");
-        services.removeAll(serverAddress);
+        log.debug("Delete registeredServices for " + serverAddress + ".");
+        registeredServices.removeAll(serverAddress);
+        coapResourceObservers.row(serverAddress).clear();
+        log.info("Succesfully removed services from " + serverAddress + " from list of observed registeredServices.");
     }
 
     @Override
     public Set<URI> getResources(){
-        HashSet<URI> result = new HashSet<URI>(services.size());
-        for(Inet6Address address : services.keySet()){
-            for(String path : services.get(address)){
-
+        HashSet<URI> result = new HashSet<URI>(registeredServices.size());
+        for(Inet6Address address : registeredServices.keySet()){
+            for(String path : registeredServices.get(address)){
                 result.add(URI.create("http://" + address.getHostAddress()
                                      + EntityManager.SSP_HTTP_SERVER_PORT
                                      + "/" + path));
@@ -257,7 +324,7 @@ public class CoapBackend extends Backend{
 
     /**
      * This method is called to process coapResponses containing a .well-known/core resource. It registers all listed
-     * services at the EntityManager and starts the observation of the "minimal" resources.
+     * registeredServices at the EntityManager and starts the observation of the "minimal" resources.
       *@param coapResponse
      * @param remoteAddress
      */
@@ -297,7 +364,7 @@ public class CoapBackend extends Backend{
                 path = "/" + path;
             }
             try {
-                services.put(remoteAddress, path);
+                registeredServices.put(remoteAddress, path);
 
                 URI[] httpURIs = createHttpURIs(remoteAddress, path);
                 EntityManager.getInstance().entityCreated(httpURIs[0], this);
@@ -305,11 +372,13 @@ public class CoapBackend extends Backend{
 
                 //try to start observing of minimal resources
                 if(path.contains("/_minimal")){
-                    log.info("Send observe request for service " + path + " at " + remoteAddress);
-                    CoapResourceObserver resourceObserver = new CoapResourceObserver(this, remoteAddress, path);
-                    resourceObserver.writeRequestToObserveResource();
+                    if(!coapResourceObservers.contains(remoteAddress, path)){
+                        log.info("Send observe request for service " + path + " at " + remoteAddress);
+                        CoapResourceObserver resourceObserver = new CoapResourceObserver(this, remoteAddress, path);
+                        resourceObserver.writeRequestToObserveResource();
 
-                    coapResourceObservers.put(remoteAddress, path, resourceObserver);
+                        coapResourceObservers.put(remoteAddress, path, resourceObserver);
+                    }
                 }
 
 //                //Virtual HTTP Server for Sensor nodes
@@ -325,50 +394,10 @@ public class CoapBackend extends Backend{
                 log.fatal("[CoapBackend] Error while creating URI. This should never happen.", e);
             }
         }
-        //start auto-annotation
-        autoAnnotation(remoteAddress);
+
     }
 
-    public void autoAnnotation(Inet6Address remoteAddress){
-        //----------- fuzzy annotation and visualizer----------------------
-        String ipv6Addr = remoteAddress.getHostAddress();
-        if(ipv6Addr.indexOf("%") != -1){
-            ipv6Addr = ipv6Addr.substring(0, ipv6Addr.indexOf("%"));
-        }
-        TString mac = new TString(ipv6Addr,':');
-        String macAddr = mac.getStrAtEnd();
 
-        log.debug("MACAddr is " + macAddr);
-
-        if(IPAddressUtil.isIPv6LiteralAddress(ipv6Addr)){
-            ipv6Addr = "[" + ipv6Addr + "]";
-        }
-
-        //URI of the minimal service (containg light value) of the new sensor
-        String httpRequestUri = null;
-        try {
-            URI uri = CoapBackend.createHttpURIs((Inet6Address) remoteAddress, "/light/_minimal")[0];
-            httpRequestUri = uri.toString();
-        }
-        catch (URISyntaxException e) {
-            log.error("Exception", e);
-        }
-
-        //httpTargetURI = "http://" + httpTargetURI+":8080/light/_minimal";
-        log.debug("HTTP URI for minimal service: " + httpRequestUri);
-
-        //String FOI = "";
-
-//        while (coapRequest.getPayload().readable())
-//            FOI += (char)coapRequest.getPayload().readByte();
-//        log.debug("FOI full: "+FOI);
-//        TString tfoi = new TString(FOI,'/');
-//        String foi = tfoi.getStrAtEnd();
-//        FOI = foi.substring(0, foi.length()-1);
-//        log.debug("FOI extracted: " + FOI);
-
-        AutoAnnotation.getInstance().updateDB(ipv6Addr, macAddr, httpRequestUri);
-    }
 //    /**
 //     * Returns the IPv6 prefix of the net the CoapBackend is responsible for (e.g. 2001:638:b157:1)
 //     * @return the IPv6 prefix of the net the CoapBackend is responsible for (e.g. 2001:638:b157:1)

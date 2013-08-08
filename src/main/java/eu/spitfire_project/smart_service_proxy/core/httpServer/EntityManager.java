@@ -57,6 +57,15 @@ import org.jboss.netty.handler.codec.http.HttpResponseStatus;
 import sun.net.util.IPAddressUtil;
 import eu.spitfire_project.smart_service_proxy.core.Backend;
 import eu.spitfire_project.smart_service_proxy.core.UIElement;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.URI;
+import java.nio.charset.Charset;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.TreeSet;
+import java.util.Vector;
+import java.util.concurrent.ConcurrentHashMap;
 
 //import eu.spitfire_project.smart_service_proxy.backends.coap.CoapBackend;
 
@@ -358,17 +367,50 @@ public class EntityManager extends SimpleChannelHandler {
 			uri = nextEntityURI();
 		}
 		uri = toThing(uri);
-		entities.put(uri, backend);
-		log.debug("New entity created: " + uri);
-		
+
+        if(!(entities.get(uri) == backend)){
+            entities.put(uri, backend);
+            log.debug("New entity created: " + uri);
+        }
+
 		return uri;
 	}
 
     public URI virtualEntityCreated(URI uri, Backend backend) {
         uri = toThing(uri);
-        virtualEntities.put(uri, backend);
-        log.debug("New virtual entity created: " + uri);
+        if(!(virtualEntities.get(uri) == backend)){
+            virtualEntities.put(uri, backend);
+            log.debug("New virtual entity created: " + uri);
+        }
         return uri;
+    }
+
+    public boolean entityDeleted(URI uri, Backend backend) {
+        uri = toThing(uri);
+        boolean succesful = entities.remove(uri, backend);
+
+        if(succesful){
+            log.debug("Succesfully deleted " + uri);
+        }
+        else{
+            log.debug("Could not delete: " + uri);
+        }
+
+        return succesful;
+    }
+
+    public boolean virtualEntityDeleted(URI uri, Backend backend) {
+        uri = toThing(uri);
+        boolean succesful = virtualEntities.remove(uri, backend);
+
+        if(succesful){
+            log.debug("Succesfully deleted " + uri);
+        }
+        else{
+            log.debug("Could not delete: " + uri);
+        }
+
+        return succesful;
     }
 	
 	public Backend getBackend(String elementSE) {

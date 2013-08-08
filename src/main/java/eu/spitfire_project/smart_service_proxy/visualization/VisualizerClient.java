@@ -11,11 +11,13 @@ import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.channel.ChannelHandlerContext;
 import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.handler.codec.http.*;
+import org.joda.time.DateTime;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
+import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 
@@ -38,7 +40,7 @@ public class VisualizerClient extends HttpClient implements Callable<HttpRespons
     private static String VISUALIZER_PATH;
     static{
         try {
-            VISUALIZER_IP = InetAddress.getByName("141.83.106.116");
+            VISUALIZER_IP = InetAddress.getByName("localhost");
             //VISUALIZER_IP = InetAddress.getByName("spitfire-visualizer.wuxi.cn");
             VISUALIZER_PORT = 10000;
             VISUALIZER_PATH = "/visualizer";
@@ -49,7 +51,7 @@ public class VisualizerClient extends HttpClient implements Callable<HttpRespons
     }
 
     private SimulatedTimeUpdater stu= new SimulatedTimeUpdater();
-    private static int simulatedTime = 360; //Minutes!!!
+    public static int simulatedTime = 360; //Minutes!!!
     private static int imageIndex = 24;
 
     private final Object responseMonitor = new Object();
@@ -85,15 +87,38 @@ public class VisualizerClient extends HttpClient implements Callable<HttpRespons
                 if (httpResponse != null && httpResponse.getStatus().equals(HttpResponseStatus.OK)) {
 
                     log.debug("Response received.");
+                    System.out.println("TIME: " + simulatedTime);
 
-                    if((simulatedTime % 1440) - 1200 == 0){
+                    DateTime simulatedDate = SimulatedTimeParameters.startDate.plusMinutes(VisualizerClient.simulatedTime);
+
+                    int days = simulatedDate.getDayOfMonth() - SimulatedTimeParameters.startDate.getDayOfMonth();
+
+                    System.out.println("==========================================");
+                    System.out.println(days);
+                    System.out.println("==========================================");
+
+                    //Dennis's code
+                    if((simulatedTime % 1440) - 1200 == 0 && days == 6){
+                        simulatedTime = 360;
+                        imageIndex = 24;
+                    } else if((simulatedTime % 1440) - 1200 == 0){
                         simulatedTime += 600;
                         imageIndex = 24;
-                    }
-                    else{
+                    } else{
                         simulatedTime += 15;
                         imageIndex += 1;
                     }
+                    //End Dennis's code*/
+
+                    /*/Cuong's code
+                    if((simulatedTime % 1440) - 1200 == 0){
+                        simulatedTime += 600;
+                        imageIndex = 24;
+                    } else{
+                        simulatedTime += 15;
+                        imageIndex += 1;
+                    }
+                    //End Cuong's code*/
                 }
 
                 return httpResponse;
@@ -108,17 +133,30 @@ public class VisualizerClient extends HttpClient implements Callable<HttpRespons
         String visualizerService = "http://" + VISUALIZER_IP + ":" + VISUALIZER_PORT + VISUALIZER_PATH;
         HttpRequest httpRequest = new DefaultHttpRequest(HttpVersion.HTTP_1_1, POST, visualizerService);
 
+        String liveAnno = AutoAnnotation.getInstance().getLiveAnno();
         String payload = String.valueOf(simulatedTime) + "|" + String.valueOf(imageIndex % 96) + "|" //+ "20" + "\n";
-            + String.valueOf(SimulatedTimeParameters.actualTemperature) + "\n";
+            + String.valueOf(SimulatedTimeParameters.actualTemperature) + "|" +liveAnno+ "\n";
+
+        System.out.println("==========================================");
+        System.out.println("Send date to visualizer : " + simulatedTime);
+        System.out.println("==========================================");
 
 
         for (int i=0; i< AutoAnnotation.getInstance().sensors.len(); i++) {
             SensorData sd = (SensorData) AutoAnnotation.getInstance().sensors.get(i);
+            //log.debug("Payload for sensor "+sd.macAddr);
             //String timeStamp = String.valueOf(sd.getLatestTS());
             String timeStamp = String.valueOf(simulatedTime - 15);
             String value = String.format(Locale.US, "%.4f", sd.getLatestVL());
-            String entry = sd.senID + "|" + sd.ipv6Addr + "|" + sd.macAddr + "|" + sd.FOI + "|"
-                            + timeStamp + "|" +value;
+            String sc = String.format(Locale.US, "%.4f", sd.liveSc);
+            String status = "";
+            if (sd.newlyAdded) {
+                status = "newlyadded";
+                sd.newlyAdded = false;
+            } else
+                status = "working";
+            String entry = status + "|" + sd.ipv6Addr + "|" + sd.macAddr + "|" + sd.FOI + "|"
+                            + timeStamp + "|" +value + "|" + sc;
             payload += entry + "\n";
         }
 
@@ -126,7 +164,7 @@ public class VisualizerClient extends HttpClient implements Callable<HttpRespons
             payload = payload.substring(0, payload.length()-1);
         }
 
-        log.debug("Payload of request to visualizer service: " + payload);
+        log.debug("Payload of request to visualizer service: \n------ " + payload);
 
         ChannelBuffer payloadBuffer = ChannelBuffers.copiedBuffer(payload.getBytes(Charset.forName("UTF-8")));
         httpRequest.setContent(payloadBuffer);
